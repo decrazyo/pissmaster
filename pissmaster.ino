@@ -8,33 +8,13 @@
 #include <FS.h>
 
 // Obvious WiFi stuff.
+// #define WIFI_SSID "<ENTER SSID>"
+// #define WIFI_PASSWORD "<ENTER PASSWORD>"
 #define WIFI_HOSTNAME "pissmaster"
-#define WIFI_SSID ""
-#define WIFI_PASSWORD ""
 
-// Comment this out to remove the header from *.csv files.
-#define LOG_HEADER
-
-// Window size for moving median and moving mean calculations.
-#define SAMPLE_WINDOW 5
-
-// Directory in which to store logged data.
-#define LOG_DIR "/pissmaster"
-
-// SD card chip select pin.
-// Comment this out to use the chip's internal flash.
-#define SD_CS_PIN 5
-
-// Pin connected to momentary switch for switching modes.
-#define BUTTON_PIN 0
-// Whether or not to use the BUTTON_PIN's internal pullup resistor.
-#define BUTTON_PULLUP false
-
-// #define LOADCELL_CALIBRATION_MEASUREMENT 
-// #define LOADCELL_CALIBRATION_WEIGHT 
-// 1 US cup of water (236.59 grams) measured 96421.87445887446
-#define LOADCELL_CALIBRATION_MEASUREMENT 96421.87445887446
-#define LOADCELL_CALIBRATION_WEIGHT 236.59
+// Define these to calibrate the load cell
+// #define LOADCELL_CALIBRATION_WEIGHT <known weight of an object in grams>
+// #define LOADCELL_CALIBRATION_MEASUREMENT <measured value of the object with known weight>
 
 // Pins connected to the load cell analog to digital converter.
 #define LOADCELL_DOUT_PIN 16
@@ -45,6 +25,25 @@
 
 // Milliseconds to wait for a serial connection.
 #define SERIAL_TIMEOUT 2000
+
+// Comment this out to remove the header from *.csv files.
+#define LOG_HEADER
+
+// Directory in which to store logged data.
+#define LOG_DIR "/pissmaster"
+
+// Window size for moving average calculations.
+#define SAMPLE_WINDOW 5
+
+// SD card chip select pin.
+// Comment this out to use the chip's internal flash.
+#define SD_CS_PIN 5
+
+// Pin connected to momentary switch for switching modes.
+#define BUTTON_PIN 0
+// Whether or not to use the BUTTON_PIN's internal pullup resistor.
+#define BUTTON_PULLUP false
+
 
 
 #if defined(LOADCELL_CALIBRATION_MEASUREMENT) && defined(LOADCELL_CALIBRATION_WEIGHT)
@@ -219,9 +218,13 @@ public:
     Serial.println("Writing header.");
 
     String header = 
-      "time\tweight\tweight median\tweight average\t"
-      "time delta\tweight delta\tweight median delta\tweight average delta\t"
-      "flow\tmedian flow\taverage flow\n";
+      "time(ms)\t"
+      "time(s)\t"
+      "time delta(s)\t"
+      "volume(ml)\t"
+      "volume average(ml)\t"
+      "volume average delta(ml)\t"
+      "flow(ml/s)\n";
 
     if(mLogFile.print(header)){
       mLogHeader = true;
@@ -233,46 +236,32 @@ public:
   }
 
 
-  void writeLogData(unsigned long time, float weight) {
+  void writeLogData(unsigned long time, float volume) {
     String rowCurrent = String(mRow);
     String rowNext = String(mRow + 1);
     String rowWindow = String(mRow + mSampleWindow - 1);
 
+    // time(ms)
     String colA = String(time);
-    String colB = String(weight);
+    // time(s)
+    // =A[i]/1000
+    String colB = String("=A" + rowCurrent + "/1000");
+    // time delta(s)
+    // =B[i+1]-B[i]
+    String colC = String("=B" + rowNext + "-B" + rowCurrent);
 
-    // =MEDIAN(B[row]:B[row+window-1]
-    // weight median
-    String colC = String(
-      "=MEDIAN(B" + rowCurrent + ":B" + rowWindow + ")");
-    // weight average
-    String colD = String(
-      "=AVERAGE(B" + rowCurrent + ":B" + rowWindow + ")");
+    // volume(ml)
+    String colD = String(volume);
+    // volume average(ml)
+    // =AVERAGE(D[i]:D[i+j])
+    String colE = String("=AVERAGE(D" + rowCurrent + ":D" + rowWindow + ")");
+    // volume average delta(ml)
+    // =E[i+1]-E[i]
+    String colF = String("=E" + rowNext + "-E" + rowCurrent);
 
-    // =IF(A[row+1]="","",A[row+1]-A[row])
-    // time delta
-    String colE = String(
-      "=IF(A" + rowNext + "=\"\",\"\",A" + rowNext + "-A" + rowCurrent + ")");
-    // weight delta
-    String colF = String(
-      "=IF(B" + rowNext + "=\"\",\"\",B" + rowNext + "-B" + rowCurrent + ")");
-    // weight median delta
-    String colG = String(
-      "=IF(C" + rowNext + "=\"\",\"\",C" + rowNext + "-C" + rowCurrent + ")");
-    // weight average delta
-    String colH = String(
-      "=IF(D" + rowNext + "=\"\",\"\",D" + rowNext + "-D" + rowCurrent + ")");
-
-    // =IF(E[row]="","",F[row]/E[row])
-    // flow
-    String colI = String(
-      "=IF(E" + rowCurrent + "=\"\",\"\",F" + rowCurrent + "/E" + rowCurrent + ")");
-    // median flow
-    String colJ = String(
-      "=IF(E" + rowCurrent + "=\"\",\"\",G" + rowCurrent + "/E" + rowCurrent + ")");
-    // average flow
-    String colK = String(
-      "=IF(E" + rowCurrent + "=\"\",\"\",H" + rowCurrent + "/E" + rowCurrent + ")");
+    // flow(ml/s)
+    // =F[i]/C[i]
+    String colG = String("=F" + rowCurrent + "/C" + rowCurrent);
 
     String line = colA;
     line += "\t" + colB;
@@ -281,10 +270,6 @@ public:
     line += "\t" + colE;
     line += "\t" + colF;
     line += "\t" + colG;
-    line += "\t" + colH;
-    line += "\t" + colI;
-    line += "\t" + colJ;
-    line += "\t" + colK;
 
     if(mLogFile.println(line)){
       mRow++;
@@ -476,8 +461,8 @@ void loop() {
 #ifdef LOG_HEADER
       gLogger.writeLogHeader();
 #endif
-      gClock.reset();
       gCell.tare();
+      gClock.reset();
       Serial.println("Logging started");
 #ifdef LED_BUILTIN
       digitalWrite(LED_BUILTIN, HIGH);
