@@ -9,8 +9,8 @@
 
 // Obvious WiFi stuff.
 #define WIFI_HOSTNAME "pissmaster"
-#define WIFI_SSID "***REMOVED***"
-#define WIFI_PASSWORD "***REMOVED***"
+#define WIFI_SSID ""
+#define WIFI_PASSWORD ""
 
 // Comment this out to remove the header from *.csv files.
 #define LOG_HEADER
