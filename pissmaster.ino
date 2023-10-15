@@ -1,18 +1,19 @@
 
-// This library may emit warnings about portability during compilation.
-// That is expected and can be ignored.
-// https://github.com/bogde/HX711
-#include <HX711.h> // v0.7.5
+// ========================
+// Begin user configuration
+// ========================
 
-// https://github.com/espressif/arduino-esp32
-#include <FS.h>
-
-// Obvious WiFi stuff.
+// Define the following to enable WiFi features.
+// Note that WiFi features are temporally disabled while data is actively being logged.
+// These settings only apply to ESP32 microcontrollers.
+// 
 // #define WIFI_SSID "<ENTER SSID>"
 // #define WIFI_PASSWORD "<ENTER PASSWORD>"
-#define WIFI_HOSTNAME "pissmaster"
+// #define WIFI_HOSTNAME "pissmaster"
 
-// Define these to calibrate the load cell
+// Define the following to calibrate the load cell.
+// See the "Calibration" section of "README.md" for instructions.
+// 
 // #define LOADCELL_CALIBRATION_WEIGHT <known weight of an object in grams>
 // #define LOADCELL_CALIBRATION_MEASUREMENT <measured value of the object with known weight>
 
@@ -30,21 +31,41 @@
 #define LOG_HEADER
 
 // Directory in which to store logged data.
-#define LOG_DIR "/pissmaster"
+#define LOG_DIR "/"
 
-// Window size for moving average calculations.
-#define SAMPLE_WINDOW 5
+// Window size for moving mean/median calculations.
+#define WINDOW_SAMPLES 5
+
+// Function used to smooth data samples.
+#define WINDOW_FUNCTION "AVERAGE"
+// #define WINDOW_FUNCTION "MEDIAN"
 
 // SD card chip select pin.
-// Comment this out to use the chip's internal flash.
-#define SD_CS_PIN 5
+// The SPI SS pin of your chosen microcontroller will be used by default.
+// Any GPIO pin can be specified instead.
+// This can be undefined on ESP32 microcontrollers to use the chip's internal flash.
+#define SD_CS_PIN
 
-// Pin connected to momentary switch for switching modes.
+// Pin connected to a momentary switch.
+// This is used to start and finish logging data.
 #define BUTTON_PIN 0
+
 // Whether or not to use the BUTTON_PIN's internal pullup resistor.
 #define BUTTON_PULLUP false
 
+// Pin connected to an LED to indicate the system's status.
+// If this is left undefined then LED_BUILTIN will be used.
+// 
+// #define STATUS_LED_PIN 2
 
+// ======================
+// End user configuration
+// ======================
+
+// Check that we are building for a supported architecture.
+// #if !defined(ESP32) && !defined(AVR)
+// #error Unknown architecture.
+// #endif
 
 #if defined(LOADCELL_CALIBRATION_MEASUREMENT) && defined(LOADCELL_CALIBRATION_WEIGHT)
 #define LOADCELL_DIVIDER LOADCELL_CALIBRATION_MEASUREMENT / LOADCELL_CALIBRATION_WEIGHT
@@ -52,55 +73,93 @@
 #define LOADCELL_DIVIDER 1
 #endif
 
+#if !defined(STATUS_LED_PIN) && defined(LED_BUILTIN)
+#define STATUS_LED_PIN LED_BUILTIN
+#endif
+
+// This library may emit warnings about portability during compilation.
+// That is expected and can be ignored.
+// https://github.com/bogde/HX711
+#include <HX711.h> // designed with v0.7.5
+
+#ifdef ESP32
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/FS
+#include <FS.h>
+#ifdef SD_CS_PIN
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/SD
+#include <SD.h>
+#else
+// Use internal flash.
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/FFat
+#include <FFat.h>
+#endif // ifdef SD_CS_PIN
 #if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
 #define WIFI_ENABLED
-#endif
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/WiFi
+#include <WiFi.h>
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/WebServer
+#include <WebServer.h>
+// https://github.com/espressif/arduino-esp32/tree/master/libraries/HTTPClient
+#include <HTTPClient.h>
+#endif // if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
+#else
+// AVR
+// https://github.com/arduino-libraries/SD
+#include <SPI.h>
+#include <SD.h>
+#ifndef SD_CS_PIN
+#define SD_CS_PIN
+#endif // ifndef SD_CS_PIN
+#endif // ifdef ESP32
 
-#if defined(SD_CS_PIN)
-#define LOG_TO_SD
-#endif
 
+
+// Called in the event of an unrecoverable error.
+// This is usually caused by a hardware failure such as a wire coming unplugged.
 void fatalError() {
-  Serial.println("Fatal error.");
-#ifdef LED_BUILTIN
-  uint8_t state = !digitalRead(LED_BUILTIN);
-#endif
+  Serial.println(F("Fatal error."));
+#ifdef STATUS_LED_PIN
+  uint8_t state = !digitalRead(STATUS_LED_PIN);
+#endif // ifdef STATUS_LED_PIN
+  // Blink an LED to indicate an error.
   while(true) {
-#ifdef LED_BUILTIN
-    digitalWrite(LED_BUILTIN, state);
+#ifdef STATUS_LED_PIN
+    digitalWrite(STATUS_LED_PIN, state);
     state = !state;
-#endif
+#endif // ifdef STATUS_LED_PIN
     delay(200);
   }
 }
 
 
+
 class Button {
 private:
-    int mButtonPin;
-    int mButtonState;
-    int mButtonpDefault;
+  int mButtonPin;
+  int mButtonState;
+  int mButtonpDefault;
 public:
-    void begin(int buttonPin, bool pullUp) {
-        mButtonPin = buttonPin;
-        pinMode(mButtonPin, pullUp ? INPUT_PULLUP : INPUT);
-        mButtonState = digitalRead(mButtonPin);
-        mButtonpDefault = mButtonState;
+  void begin(int buttonPin, bool pullUp) {
+    mButtonPin = buttonPin;
+    pinMode(mButtonPin, pullUp ? INPUT_PULLUP : INPUT);
+    mButtonState = digitalRead(mButtonPin);
+    mButtonpDefault = mButtonState;
+  }
+
+  bool pressed() {
+    bool buttonPressed = false;
+    uint8_t newState = digitalRead(mButtonPin);
+
+    if(newState != mButtonState && newState != mButtonpDefault) {
+      buttonPressed = true;
     }
 
-    bool pressed() {
-      bool buttonPressed = false;
-      uint8_t newState = digitalRead(mButtonPin);
+    mButtonState = newState;
 
-      if(newState != mButtonState && newState != mButtonpDefault) {
-        buttonPressed = true;
-      }
-
-      mButtonState = newState;
-
-      return buttonPressed;
-    }
+    return buttonPressed;
+  }
 };
+
 
 
 class Clock {
@@ -108,7 +167,7 @@ private:
   unsigned long mReset;
 public:
   void reset() {
-      mReset = millis();
+    mReset = millis();
   }
 
   unsigned long time() {
@@ -126,26 +185,41 @@ public:
 };
 
 
+
 class Logger {
 private:
+#ifdef ESP32
   fs::FS& mFileSystem;
+#else // AVR
+  SDClass& mFileSystem;
+#endif // ifdef ESP32
   String mLogDir;
   File mLogFile;
-  unsigned long mSampleWindow;
+  unsigned long mWindowSamples;
+  String mWindowFunction;
   bool mLogHeader;
   unsigned long mRow;
 
 public:
-  Logger(fs::FS &fileSystem, String logDir, unsigned long sampleWindow) :
+#ifdef ESP32
+  Logger(fs::FS& fileSystem, String logDir, unsigned long windowSamples, String windowFunction) :
+#else // AVR
+  Logger(SDClass& fileSystem, String logDir, unsigned long windowSamples, String windowFunction) :
+#endif // ifdef ESP32
     mFileSystem(fileSystem),
     mLogDir(logDir),
-    mSampleWindow(sampleWindow),
+    mWindowSamples(windowSamples),
+    mWindowFunction(windowFunction),
     mLogHeader(false),
     mRow(1) {}
 
   void createLogDir() {
     Serial.println("Checking for log directory '" + mLogDir + "'.");
-    if(mFileSystem.exists(mLogDir)) {
+
+    if(mLogDir == "/") {
+      Serial.println(F("Logging to file system root"));
+    }
+    else if(mFileSystem.exists(mLogDir)) {
       File dir = mFileSystem.open(mLogDir);
 
       if(!dir.isDirectory()) {
@@ -161,11 +235,11 @@ public:
         fatalError();
       }
     }
-    Serial.println("Log directory ready.");
+    Serial.println(F("Log directory ready."));
   }
 
   void openLogFile() {
-    Serial.println("Locating log files.");
+    Serial.println(F("Locating log files."));
     File dir = mFileSystem.open(mLogDir);
 
     if(!dir){
@@ -180,7 +254,7 @@ public:
 
     long fileNumberMax = 0;
 
-    Serial.println("Indexing log files.");
+    Serial.println(F("Indexing log files."));
     // Find the file/dir with the largest number as it's name.
     for(File file = dir.openNextFile(); file; file = dir.openNextFile()) {
       String name = String(file.name());
@@ -202,7 +276,15 @@ public:
 
     dir.close();
 
-    String path = String(mLogDir) + "/" + String(fileNumberMax + 1) + ".csv";
+    String path;
+
+    if(mLogDir.endsWith("/")) {
+      path = mLogDir + String(fileNumberMax + 1) + ".csv";
+    }
+    else {
+      path = mLogDir + "/" + String(fileNumberMax + 1) + ".csv";
+    }
+
     Serial.println("Creating log file '" + path + "'.");
     File log = mFileSystem.open(path, FILE_WRITE);
 
@@ -215,7 +297,7 @@ public:
   }
 
   void writeLogHeader() {
-    Serial.println("Writing header.");
+    Serial.println(F("Writing header."));
 
     String header = 
       "time(ms)\t"
@@ -231,15 +313,14 @@ public:
       mRow++;
     }
     else {
-      Serial.println("Error: Failed to write header.");
+      Serial.println(F("Error: Failed to write header."));
     }
   }
-
 
   void writeLogData(unsigned long time, float volume) {
     String rowCurrent = String(mRow);
     String rowNext = String(mRow + 1);
-    String rowWindow = String(mRow + mSampleWindow - 1);
+    String rowWindow = String(mRow + mWindowSamples - 1);
 
     // time(ms)
     String colA = String(time);
@@ -254,7 +335,7 @@ public:
     String colD = String(volume);
     // volume average(ml)
     // =AVERAGE(D[i]:D[i+j])
-    String colE = String("=AVERAGE(D" + rowCurrent + ":D" + rowWindow + ")");
+    String colE = String("=" + mWindowFunction + "(D" + rowCurrent + ":D" + rowWindow + ")");
     // volume average delta(ml)
     // =E[i+1]-E[i]
     String colF = String("=E" + rowNext + "-E" + rowCurrent);
@@ -275,7 +356,7 @@ public:
       mRow++;
     }
     else {
-      Serial.println("Error: Failed to write data.");
+      Serial.println(F("Error: Failed to write data."));
     }
   }
 
@@ -287,10 +368,10 @@ public:
   }
 };
 
+
+
 #ifdef WIFI_ENABLED
-#include <WiFi.h>
-#include <WebServer.h>
-#include <HTTPClient.h>
+// ESP32 exclusive feature
 class FileBrowser : public RequestHandler {
 private:
   fs::FS& mFileSystem;
@@ -302,14 +383,18 @@ public:
   }
 
   String normalizeUri(String uri) {
+    // Reduce repeated slashes to a single slash.
     while(uri.indexOf("//") != -1) {
       uri.replace("//", "/");
     }
 
+    // Remove trailing slashes unless we are at the root.
+    // The filesystem doesn't like trailing slashes.
     while(uri.endsWith("/") && uri != "/") {
       uri.remove(uri.lastIndexOf("/"));
     }
 
+    // Ensure that the path starts with a slash.
     if(!uri.startsWith("/")) {
       uri = "/" + uri;
     }
@@ -333,6 +418,7 @@ public:
         String page;
         String href;
 
+        // Link to parent directory.
         if(uri != "/") {
           href = uri;
           href.remove(href.lastIndexOf("/"));
@@ -340,6 +426,7 @@ public:
           page += "<a href=\"" + href + "\">..</a></br>\n";
         }
 
+        // Link to directory contents.
         for(File next = file.openNextFile(); next; next = file.openNextFile()) {
           href = normalizeUri(uri + "/" + next.name());
           page += "<a href=\"" + href + "\">" + next.name() + "</a></br>\n";
@@ -360,15 +447,13 @@ public:
 };
 
 WebServer gWebServer;
-#endif
+#endif // ifdef WIFI_ENABLED
 
-#ifdef LOG_TO_SD
-#include <SD.h>
-Logger gLogger(SD, LOG_DIR, SAMPLE_WINDOW);
+#ifdef SD_CS_PIN
+Logger gLogger(SD, LOG_DIR, WINDOW_SAMPLES, WINDOW_FUNCTION);
 #else
-#include <FFat.h>
-Logger gLogger(FFat, LOG_DIR, SAMPLE_WINDOW);
-#endif
+Logger gLogger(FFat, LOG_DIR, WINDOW_SAMPLES, WINDOW_FUNCTION);
+#endif // ifdef SD_CS_PIN
 
 HX711 gCell;
 Button gButton;
@@ -376,51 +461,52 @@ Clock gClock;
 bool gMeasuring = false;
 
 
+
 void setup() {
-#ifdef LED_BUILTIN
-  pinMode(LED_BUILTIN, OUTPUT);
-  digitalWrite(LED_BUILTIN, HIGH);
-#endif
+#ifdef STATUS_LED_PIN
+  pinMode(STATUS_LED_PIN, OUTPUT);
+  digitalWrite(STATUS_LED_PIN, HIGH);
+#endif // ifdef STATUS_LED_PIN
 
   gButton.begin(BUTTON_PIN, BUTTON_PULLUP);
 
   Serial.begin(115200);
   auto serialBegin = millis();
   while(!Serial && serialBegin + SERIAL_TIMEOUT > millis()) {}
-  Serial.println("Serial ready.");
+  Serial.println(F("Serial ready."));
 
-#ifdef LOG_TO_SD
-  Serial.println("Initializing SD card.");
+#ifdef SD_CS_PIN
+  Serial.println(F("Initializing SD card."));
   if(!SD.begin(SD_CS_PIN)) {
-    Serial.println("Error: Failed to initialize SD card.");
+    Serial.println(F("Error: Failed to initialize SD card."));
     fatalError();
   }
-  Serial.println("SD card ready.");
+  Serial.println(F("SD card ready."));
 #else
-  Serial.println("Initializing flash.");
+  Serial.println(F("Initializing flash."));
   if(!FFat.begin(true)) {
-    Serial.println("Error: Failed to initialize flash.");
+    Serial.println(F("Error: Failed to initialize flash."));
     fatalError();
   }
-  Serial.println("Flash ready.");
-#endif
+  Serial.println(F("Flash ready."));
+#endif // ifdef SD_CS_PIN
 
-  Serial.println("Initializing load cell.");
+  Serial.println(F("Initializing load cell."));
   gCell.begin(LOADCELL_DOUT_PIN, LOADCELL_SCK_PIN);
   if(!gCell.wait_ready_timeout(LOADCELL_TIMEOUT)) {
-    Serial.println("Error: Failed to initialize load cell.");
+    Serial.println(F("Error: Failed to initialize load cell."));
     fatalError();
   }
   gCell.set_scale(LOADCELL_DIVIDER);
-  Serial.println("Load cell ready.");
+  Serial.println(F("Load cell ready."));
 
 #ifdef WIFI_ENABLED
-  Serial.println("Initializing WiFi.");
+  Serial.println(F("Initializing WiFi."));
   Serial.println("Connecting to '" + String(WIFI_SSID) + "'.");
   WiFi.mode(WIFI_STA);
 #ifdef WIFI_HOSTNAME
   WiFi.setHostname(WIFI_HOSTNAME);
-#endif
+#endif // ifdef WIFI_HOSTNAME
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   while(WiFi.status() != WL_CONNECTED) {
@@ -428,24 +514,26 @@ void setup() {
     delay(1000);
   }
   Serial.println("");
-  Serial.println("Connected.");
+  Serial.println(F("Connected."));
 
-  Serial.println("Initializing web server.");
-#ifdef LOG_TO_SD
+  Serial.println(F("Initializing web server."));
+#ifdef SD_CS_PIN
   gWebServer.addHandler(new FileBrowser(SD));
 #else
   gWebServer.addHandler(new FileBrowser(FFat));
-#endif
+#endif // ifdef SD_CS_PIN
   gWebServer.begin();
-  Serial.println("Web server ready.");
+  Serial.println(F("Web server ready."));
   Serial.println("http://" + WiFi.localIP().toString() + "/");
-#endif
+#endif // ifdef WIFI_ENABLED
 
-  Serial.println("Pissmaster ready!");
-#ifdef LED_BUILTIN
-  digitalWrite(LED_BUILTIN, LOW);
-#endif
+  Serial.println(F("Pissmaster ready!"));
+#ifdef STATUS_LED_PIN
+  digitalWrite(STATUS_LED_PIN, LOW);
+#endif // ifdef STATUS_LED_PIN
 }
+
+
 
 void loop() {
   // Toggle between measuring flow and serving files over WiFi when the button is pressed.
@@ -460,13 +548,13 @@ void loop() {
       gLogger.openLogFile();
 #ifdef LOG_HEADER
       gLogger.writeLogHeader();
-#endif
+#endif // ifdef LOG_HEADER
       gCell.tare();
       gClock.reset();
-      Serial.println("Logging started");
-#ifdef LED_BUILTIN
-      digitalWrite(LED_BUILTIN, HIGH);
-#endif
+      Serial.println(F("Logging started"));
+#ifdef STATUS_LED_PIN
+      digitalWrite(STATUS_LED_PIN, HIGH);
+#endif // ifdef STATUS_LED_PIN
     }
 
     gLogger.writeLogData(gClock.time(), gCell.get_units());
@@ -474,14 +562,14 @@ void loop() {
   else {
     if(buttonPressed) {
       gLogger.closeLogFile();
-      Serial.println("Logging finished");
-#ifdef LED_BUILTIN
-      digitalWrite(LED_BUILTIN, LOW);
-#endif
+      Serial.println(F("Logging finished"));
+#ifdef STATUS_LED_PIN
+      digitalWrite(STATUS_LED_PIN, LOW);
+#endif // ifdef STATUS_LED_PIN
     }
 
 #ifdef WIFI_ENABLED
     gWebServer.handleClient();
-#endif
+#endif // ifdef WIFI_ENABLED
   }
 }
