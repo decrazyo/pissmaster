@@ -62,11 +62,6 @@
 // End user configuration
 // ======================
 
-// Check that we are building for a supported architecture.
-// #if !defined(ESP32) && !defined(AVR)
-// #error Unknown architecture.
-// #endif
-
 #if defined(LOADCELL_CALIBRATION_MEASUREMENT) && defined(LOADCELL_CALIBRATION_WEIGHT)
 #define LOADCELL_DIVIDER LOADCELL_CALIBRATION_MEASUREMENT / LOADCELL_CALIBRATION_WEIGHT
 #else
