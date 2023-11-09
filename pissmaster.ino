@@ -1,4 +1,6 @@
 
+#include "TZ.h"
+
 // ========================
 // Begin user configuration
 // ========================
@@ -10,6 +12,15 @@
 // #define WIFI_SSID "<ENTER SSID>"
 // #define WIFI_PASSWORD "<ENTER PASSWORD>"
 // #define WIFI_HOSTNAME "pissmaster"
+
+// Defining a timezone and a time server will enable NTP functionality.
+// When NTP is enabled, files will be named with the date and time that the data was logged.
+// This feature requires WiFi to be configured.
+// See "TZ.h" for a list of valid timezones.
+#define TIMEZONE TZ_America_Chicago
+#define PRIMARY_NTP "pool.ntp.org"
+#define SECONDARY_NTP "time.nist.gov"
+#define TERTIARY_NTP "time.google.com"
 
 // Define the following to calibrate the load cell.
 // See the "Calibration" section of "README.md" for instructions.
@@ -43,7 +54,7 @@
 // SD card chip select pin.
 // The SPI SS pin of your chosen microcontroller will be used by default.
 // Any GPIO pin can be specified instead.
-// This can be undefined on ESP32 microcontrollers to use the chip's internal flash.
+// This can be commented out on ESP32 microcontrollers to use the chip's internal flash.
 #define SD_CS_PIN
 
 // Pin connected to a momentary switch.
@@ -97,6 +108,12 @@
 // https://github.com/espressif/arduino-esp32/tree/master/libraries/HTTPClient
 #include <HTTPClient.h>
 #endif // if defined(WIFI_SSID) && defined(WIFI_PASSWORD)
+#if defined(WIFI_ENABLED) && defined(TIMEZONE) && defined(PRIMARY_NTP)
+#define NTP_ENABLED
+#include <time.h>
+// #include <sntp.h> // deprecated
+#include <esp_sntp.h>
+#endif // if defined(WIFI_ENABLED) && defined(TIMEZONE) && defined(PRIMARY_NTP)
 #else
 // AVR
 // https://github.com/arduino-libraries/SD
@@ -234,6 +251,34 @@ public:
   }
 
   void openLogFile() {
+
+    String fileName;
+
+#ifdef NTP_ENABLED
+    char buffer[20];
+    time_t rawTime = time(NULL);
+    struct tm* timeInfo = localtime(&rawTime);
+    strftime(buffer, sizeof(buffer), "%Y-%m-%d-%H-%M-%S", timeInfo);
+    fileName = String(buffer);
+
+    // Handle the possibility of duplicate file names.
+    if(mFileSystem.exists(fileName + ".csv")) {
+      long fileNumber = 0;
+      String fileNumberStr;
+
+      do {
+        fileNumber++;
+        fileNumberStr = "_" + String(fileNumber);
+      } while(mFileSystem.exists(fileName + fileNumberStr + ".csv"));
+
+      fileName += fileNumberStr;
+    }
+
+    fileName += ".csv";
+
+    Serial.println(fileName);
+    // TODO: check if this file already exists.
+#else
     Serial.println(F("Locating log files."));
     File dir = mFileSystem.open(mLogDir);
 
@@ -271,13 +316,17 @@ public:
 
     dir.close();
 
+    fileName = String(fileNumberMax + 1) + ".csv";
+
+#endif
+
     String path;
 
     if(mLogDir.endsWith("/")) {
-      path = mLogDir + String(fileNumberMax + 1) + ".csv";
+      path = mLogDir + fileName;
     }
     else {
-      path = mLogDir + "/" + String(fileNumberMax + 1) + ".csv";
+      path = mLogDir + "/" + fileName;
     }
 
     Serial.println("Creating log file '" + path + "'.");
@@ -496,12 +545,24 @@ void setup() {
   Serial.println(F("Load cell ready."));
 
 #ifdef WIFI_ENABLED
+
+#ifdef NTP_ENABLED
+  Serial.println(F("Initializing NTP"));
+  configTzTime(
+    TIMEZONE,
+    PRIMARY_NTP,
+    SECONDARY_NTP,
+    TERTIARY_NTP
+  );
+#endif // ifdef NTP_ENABLED
+
   Serial.println(F("Initializing WiFi."));
   Serial.println("Connecting to '" + String(WIFI_SSID) + "'.");
   WiFi.mode(WIFI_STA);
 #ifdef WIFI_HOSTNAME
   WiFi.setHostname(WIFI_HOSTNAME);
 #endif // ifdef WIFI_HOSTNAME
+
   WiFi.begin(WIFI_SSID, WIFI_PASSWORD);
 
   while(WiFi.status() != WL_CONNECTED) {
@@ -510,6 +571,16 @@ void setup() {
   }
   Serial.println("");
   Serial.println(F("Connected."));
+
+#ifdef NTP_ENABLED
+  Serial.println(F("Syncing time"));
+  while(sntp_get_sync_status() != SNTP_SYNC_STATUS_COMPLETED) {
+    Serial.print(".");
+    delay(1000);
+  }
+  Serial.println("");
+  Serial.println(F("Synced"));
+#endif // ifdef NTP_ENABLED
 
   Serial.println(F("Initializing web server."));
 #ifdef SD_CS_PIN
